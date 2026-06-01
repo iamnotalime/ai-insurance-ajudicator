@@ -1,0 +1,71 @@
+# Insurance Adjudicator - Enterprise Dependencies
+# Production-ready requirements for the AI insurance claim adjudication system
+
+# ==================== Core Framework ====================
+fastapi>=0.109.0
+uvicorn[standard]>=0.27.0
+pydantic>=2.5.0
+pydantic-settings>=2.1.0
+
+# ==================== Database ====================
+sqlalchemy[asyncio]>=2.0.25
+asyncpg>=0.29.0  # PostgreSQL async driver
+alembic>=1.13.0  # Database migrations
+greenlet>=3.0.0  # Required for SQLAlchemy async
+
+# ==================== LLM Providers ====================
+anthropic>=0.18.0
+openai>=1.10.0
+httpx>=0.26.0  # Async HTTP client
+
+# ==================== Observability ====================
+# OpenTelemetry for distributed tracing
+opentelemetry-api>=1.22.0
+opentelemetry-sdk>=1.22.0
+opentelemetry-exporter-otlp-proto-grpc>=1.22.0
+opentelemetry-instrumentation-fastapi>=0.43b0
+opentelemetry-instrumentation-sqlalchemy>=0.43b0
+opentelemetry-instrumentation-httpx>=0.43b0
+
+# Prometheus metrics
+prometheus-client>=0.19.0
+
+# Structured logging
+python-json-logger>=2.0.7
+
+# ==================== Security ====================
+# Encryption
+cryptography>=42.0.0
+
+# Rate limiting (for Redis-backed implementation)
+redis>=5.0.0
+aioredis>=2.0.1
+
+# Security headers and middleware
+python-multipart>=0.0.6
+
+# ==================== Caching ====================
+aiocache>=0.12.2
+
+# ==================== Testing ====================
+pytest>=8.0.0
+pytest-asyncio>=0.23.0
+pytest-cov>=4.1.0
+pytest-mock>=3.12.0
+httpx>=0.26.0  # For TestClient
+factory-boy>=3.3.0  # Test fixtures
+faker>=22.0.0  # Fake data generation
+
+# ==================== Development ====================
+black>=24.1.0
+isort>=5.13.0
+mypy>=1.8.0
+ruff>=0.1.14
+
+# ==================== Type Stubs ====================
+types-redis>=4.6.0
+
+# ==================== Optional Production Dependencies ====================
+# Uncomment for production deployment
+# gunicorn>=21.2.0
+# sentry-sdk[fastapi]>=1.39.0
