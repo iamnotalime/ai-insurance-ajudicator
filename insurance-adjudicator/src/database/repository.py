@@ -156,13 +156,48 @@ class ClaimRepository(BaseRepository[ClaimDB]):
         )
         return result.rowcount > 0
 
-    async def update_decision(self, id: UUID, decision: AdjudicationDecisionDB) -> bool:
-        """Update claim with decision"""
-        claim = await self.get_by_id(id)
+    async def update_decision(
+        self,
+        id: UUID,
+        decision: AdjudicationDecision | Dict[str, Any],
+        status: Optional[ClaimStatus] = None,
+    ) -> bool:
+        """Upsert a claim decision and optionally update claim status."""
+        if isinstance(decision, dict):
+            decision = AdjudicationDecision(**decision)
+
+        claim = await self.get_by_id_with_relations(id)
         if not claim:
             return False
 
-        claim.decision = decision
+        decision_db = self._decision_pydantic_to_db(id, decision)
+        if claim.decision:
+            existing_id = claim.decision.id
+            for attr in (
+                "decision",
+                "confidence_score",
+                "approved_amount",
+                "denied_amount",
+                "reasons",
+                "detailed_explanation",
+                "coverage_analysis",
+                "policy_compliance",
+                "requires_human_review",
+                "human_review_reasons",
+                "risk_assessment",
+                "decided_at",
+                "decided_by",
+                "appeal_eligible",
+                "appeal_deadline",
+            ):
+                setattr(claim.decision, attr, getattr(decision_db, attr))
+            claim.decision.id = existing_id
+            claim.decision.fraud_indicators = decision_db.fraud_indicators
+        else:
+            claim.decision = decision_db
+
+        if status is not None:
+            claim.status = status
         claim.updated_at = datetime.now(timezone.utc)
         await self.session.flush()
         return True
@@ -370,7 +405,7 @@ class ClaimRepository(BaseRepository[ClaimDB]):
             extraction_confidence=db_doc.extraction_confidence,
             uploaded_at=db_doc.uploaded_at,
             verified=db_doc.verified,
-            metadata=db_doc.metadata or {},
+            metadata=db_doc.document_metadata or {},
         )
 
     def _decision_db_to_pydantic(self, db_decision: AdjudicationDecisionDB) -> AdjudicationDecision:
@@ -406,6 +441,47 @@ class ClaimRepository(BaseRepository[ClaimDB]):
             appeal_eligible=db_decision.appeal_eligible,
             appeal_deadline=db_decision.appeal_deadline,
         )
+
+    def _decision_pydantic_to_db(
+        self,
+        claim_id: UUID,
+        decision: AdjudicationDecision,
+    ) -> AdjudicationDecisionDB:
+        """Convert a Pydantic adjudication decision to a database model."""
+        decision_db = AdjudicationDecisionDB(
+            id=decision.id,
+            claim_id=claim_id,
+            decision=decision.decision,
+            confidence_score=decision.confidence_score,
+            approved_amount=decision.approved_amount,
+            denied_amount=decision.denied_amount,
+            reasons=[
+                reason.value if hasattr(reason, "value") else str(reason)
+                for reason in decision.reasons
+            ],
+            detailed_explanation=decision.detailed_explanation,
+            coverage_analysis=decision.coverage_analysis,
+            policy_compliance=decision.policy_compliance,
+            requires_human_review=decision.requires_human_review,
+            human_review_reasons=decision.human_review_reasons,
+            risk_assessment=decision.risk_assessment,
+            decided_at=decision.decided_at,
+            decided_by=decision.decided_by,
+            appeal_eligible=decision.appeal_eligible,
+            appeal_deadline=decision.appeal_deadline,
+        )
+        decision_db.fraud_indicators = [
+            FraudIndicatorDB(
+                indicator_type=indicator.indicator_type,
+                description=indicator.description,
+                severity=indicator.severity,
+                confidence=indicator.confidence,
+                evidence=indicator.evidence,
+                detected_at=indicator.detected_at,
+            )
+            for indicator in decision.fraud_indicators
+        ]
+        return decision_db
 
 
 class PolicyRepository(BaseRepository[PolicyDB]):
@@ -478,7 +554,7 @@ class AuditLogRepository(BaseRepository[AuditLogDB]):
             user_agent=user_agent,
             success=success,
             error_message=error_message,
-            metadata=metadata or {},
+            metadata_json=metadata or {},
         )
         return await self.create(log)
 

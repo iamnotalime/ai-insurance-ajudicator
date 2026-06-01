@@ -4,6 +4,8 @@ Provides dual authentication with RBAC role checking
 """
 
 import logging
+import hmac
+import hashlib
 from dataclasses import dataclass, field
 from datetime import datetime, timezone, timedelta
 from typing import Optional, List
@@ -121,15 +123,16 @@ def _validate_api_key(api_key: str) -> AuthenticatedUser:
             detail="API key authentication not configured",
         )
 
-    if api_key not in valid_keys:
+    if not any(hmac.compare_digest(api_key, valid_key) for valid_key in valid_keys):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid API key",
         )
 
     # API key users get viewer-level access by default
+    key_fingerprint = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16]
     return AuthenticatedUser(
-        user_id=f"api_key:{api_key[:8]}...",
+        user_id=f"api_key:{key_fingerprint}",
         roles=["viewer"],
         auth_method="api_key",
     )

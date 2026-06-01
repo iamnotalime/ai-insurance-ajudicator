@@ -124,7 +124,7 @@ class DocumentDB(Base, TimestampMixin):
 
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
     verified = Column(Boolean, default=False)
-    metadata = Column(JSONB, default={})
+    document_metadata = Column("metadata", JSONB, default={})
 
     # Relationships
     claim = relationship("ClaimDB", back_populates="documents")
@@ -323,7 +323,7 @@ class AuditLogDB(Base):
     success = Column(Boolean, default=True)
     error_message = Column(Text)
 
-    metadata = Column(JSONB, default={})
+    metadata_json = Column("metadata", JSONB, default={})
 
     __table_args__ = (
         Index("ix_audit_resource", "resource_type", "resource_id"),

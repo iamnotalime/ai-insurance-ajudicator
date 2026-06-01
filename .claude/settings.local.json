@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir -p c:/Users/stefa/Downloads/insurance-adjudicator/insurance-adjudicator/scripts)",
+      "Bash(mkdir -p c:/Users/stefa/Downloads/insurance-adjudicator/insurance-adjudicator/src/workers)",
+      "Bash(mkdir -p c:/Users/stefa/Downloads/insurance-adjudicator/insurance-adjudicator/monitoring/grafana/provisioning/datasources)",
+      "Bash(mkdir -p c:/Users/stefa/Downloads/insurance-adjudicator/insurance-adjudicator/monitoring/grafana/provisioning/dashboards)"
+    ]
+  }
+}

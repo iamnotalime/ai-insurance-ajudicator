@@ -86,7 +86,7 @@ async def process_claim(claim_id: UUID) -> bool:
             claim.decision = result.decision
             async with DatabaseSession() as session:
                 claim_repo = ClaimRepository(session)
-                await claim_repo.update_status(claim_id, claim.status)
+                await claim_repo.update_decision(claim_id, result.decision, claim.status)
 
         metrics.record_claim_processed(
             claim_type=claim.claim_type.value,

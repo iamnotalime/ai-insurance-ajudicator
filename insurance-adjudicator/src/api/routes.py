@@ -5,6 +5,7 @@ Enterprise-ready API with authentication, rate limiting, observability, and pers
 
 import json
 import logging
+import time
 from datetime import datetime, date, timezone
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
@@ -16,6 +17,7 @@ import asyncio
 from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Query, status, Request, Response, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, Field, field_validator
 
 import uvicorn
@@ -67,6 +69,7 @@ from ..core import (
     ClaimNotFoundError,
     PolicyNotFoundError,
     CircuitOpenError,
+    ConfigurationError,
 )
 
 
@@ -244,9 +247,23 @@ async def lifespan(app: FastAPI):
         logger.info("Redis connected — using distributed rate limiting and caching")
     else:
         logger.warning("Redis unavailable — using in-memory fallbacks")
+        if settings.is_production and settings.features.enable_rate_limiting:
+            raise ConfigurationError(
+                message="Redis is required for distributed rate limiting in production",
+                config_key="REDIS_HOST",
+            )
 
     # Initialize Redis-backed rate limiter (falls back to in-memory if Redis unavailable)
-    await get_rate_limiter()
+    rate_limiter = await get_rate_limiter()
+    if (
+        settings.is_production
+        and settings.features.enable_rate_limiting
+        and not rate_limiter.is_distributed
+    ):
+        raise ConfigurationError(
+            message="Distributed rate limiter is not available in production",
+            config_key="REDIS_HOST",
+        )
 
     # Initialize database if configured
     if _use_database():
@@ -290,8 +307,8 @@ async def lifespan(app: FastAPI):
                 date_of_birth=date(1985, 5, 15),
                 address={"street": "123 Main St", "city": "Anytown", "state": "CA", "zip": "90210"},
             ),
-            effective_date=date(2024, 1, 1),
-            expiration_date=date(2025, 1, 1),
+            effective_date=date(date.today().year - 1, 1, 1),
+            expiration_date=date(date.today().year + 1, 1, 1),
             premium=Decimal("1200.00"),
             coverages=[
                 CoverageItem(
@@ -349,10 +366,12 @@ create_error_handlers(app)
 
 # Add middleware (order matters - last added is first executed)
 app.add_middleware(GZipMiddleware, minimum_size=1000)
+if "*" not in settings.security.allowed_hosts:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.security.allowed_hosts)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"] if settings.is_development else settings.security.cors_origins,
-    allow_credentials=True,
+    allow_credentials="*" not in (["*"] if settings.is_development else settings.security.cors_origins),
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -365,21 +384,41 @@ if settings.observability.enable_tracing:
     instrument_fastapi(app)
 
 
+@app.middleware("http")
+async def request_metrics_middleware(request: Request, call_next):
+    """Record bounded-cardinality HTTP request metrics."""
+    start = time.perf_counter()
+    response = await call_next(request)
+    route = request.scope.get("route")
+    endpoint = getattr(route, "path", request.url.path)
+    get_metrics_collector().record_http_request(
+        method=request.method,
+        endpoint=endpoint,
+        status_code=response.status_code,
+        duration=time.perf_counter() - start,
+    )
+    return response
+
+
 # Health endpoints
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
     """Health check endpoint"""
     db_status = None
+    degraded = False
     if _use_database():
         db_health = await DatabaseHealthCheck.check()
         db_status = db_health.get("status")
+        degraded = degraded or db_status != "healthy"
 
     redis_status = None
     redis_health = await redis_health_check()
     redis_status = redis_health.get("status")
+    if settings.is_production and settings.features.enable_rate_limiting:
+        degraded = degraded or redis_status != "healthy"
 
     return HealthResponse(
-        status="healthy",
+        status="degraded" if degraded else "healthy",
         version=settings.version,
         environment=settings.environment.value,
         timestamp=datetime.now(timezone.utc),
@@ -411,6 +450,14 @@ async def readiness_check():
             raise HTTPException(
                 status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Database not ready"
+            )
+
+    if settings.is_production and settings.features.enable_rate_limiting:
+        redis_health = await redis_health_check()
+        if redis_health.get("status") != "healthy":
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Redis not ready"
             )
 
     return {"status": "ready", "agents": len(agents)}
@@ -705,7 +752,7 @@ async def adjudicate_claim(
             if _use_database():
                 async with DatabaseSession() as session:
                     claim_repo = ClaimRepository(session)
-                    await claim_repo.update_status(claim_id, claim.status)
+                    await claim_repo.update_decision(claim_id, result.decision, claim.status)
             else:
                 _claims_db[claim_id] = claim
 
@@ -909,7 +956,7 @@ async def process_claim_async(claim_id: UUID):
             if _use_database():
                 async with DatabaseSession() as session:
                     claim_repo = ClaimRepository(session)
-                    await claim_repo.update_status(claim_id, claim.status)
+                    await claim_repo.update_decision(claim_id, result.decision, claim.status)
             else:
                 _claims_db[claim_id] = claim
 

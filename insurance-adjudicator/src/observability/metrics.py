@@ -331,8 +331,9 @@ _metrics_collector: Optional[MetricsCollector] = None
 def setup_metrics() -> MetricsCollector:
     """Initialize metrics collection"""
     global _metrics_collector
-    _metrics_collector = MetricsCollector()
-    logger.info("Prometheus metrics initialized")
+    if _metrics_collector is None:
+        _metrics_collector = MetricsCollector()
+        logger.info("Prometheus metrics initialized")
     return _metrics_collector
 
 

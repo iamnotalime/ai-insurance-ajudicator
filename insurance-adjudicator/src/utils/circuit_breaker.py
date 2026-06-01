@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 T = TypeVar("T")
 
 
-class CircuitState(Enum):
+class CircuitState(str, Enum):
     """Circuit breaker states"""
     CLOSED = "closed"  # Normal operation
     OPEN = "open"  # Failures exceeded threshold, rejecting calls
@@ -82,12 +82,30 @@ class CircuitBreaker:
 
     def __init__(
         self,
-        name: str,
+        name: str = "default",
         config: Optional[CircuitBreakerConfig] = None,
         fallback: Optional[Callable[..., Any]] = None,
+        failure_threshold: Optional[int] = None,
+        success_threshold: Optional[int] = None,
+        timeout: Optional[float] = None,
+        half_open_max_calls: Optional[int] = None,
+        exception_types: Optional[tuple] = None,
+        excluded_exceptions: Optional[tuple] = None,
     ):
         self.name = name
         self.config = config or CircuitBreakerConfig()
+        if failure_threshold is not None:
+            self.config.failure_threshold = failure_threshold
+        if success_threshold is not None:
+            self.config.success_threshold = success_threshold
+        if timeout is not None:
+            self.config.timeout = timeout
+        if half_open_max_calls is not None:
+            self.config.half_open_max_calls = half_open_max_calls
+        if exception_types is not None:
+            self.config.exception_types = exception_types
+        if excluded_exceptions is not None:
+            self.config.excluded_exceptions = excluded_exceptions
         self.fallback = fallback
 
         self._state = CircuitState.CLOSED

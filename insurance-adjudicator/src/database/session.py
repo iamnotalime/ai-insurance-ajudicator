@@ -14,7 +14,7 @@ from sqlalchemy.ext.asyncio import (
     AsyncEngine,
     async_sessionmaker
 )
-from sqlalchemy.pool import NullPool, QueuePool
+from sqlalchemy.pool import NullPool
 
 from ..config.settings import settings
 from .models import Base
@@ -29,10 +29,7 @@ _session_factory: Optional[async_sessionmaker[AsyncSession]] = None
 
 def get_database_url() -> str:
     """Get the async database URL"""
-    db = settings.database
-    # Convert postgresql:// to postgresql+asyncpg:// for async support
-    base_url = f"postgresql+asyncpg://{db.user}:{db.password}@{db.host}:{db.port}/{db.name}"
-    return base_url
+    return settings.database.async_connection_string
 
 
 def get_engine() -> AsyncEngine:
@@ -44,7 +41,6 @@ def get_engine() -> AsyncEngine:
 
         # Configure pool based on environment
         if settings.is_production:
-            pool_class = QueuePool
             pool_kwargs = {
                 "pool_size": settings.database.pool_size,
                 "max_overflow": settings.database.max_overflow,
@@ -53,13 +49,11 @@ def get_engine() -> AsyncEngine:
             }
         else:
             # Use NullPool for development to avoid connection issues
-            pool_class = NullPool
-            pool_kwargs = {}
+            pool_kwargs = {"poolclass": NullPool}
 
         _engine = create_async_engine(
             database_url,
             echo=settings.is_development,  # Log SQL in development
-            poolclass=pool_class,
             **pool_kwargs
         )
 
@@ -86,14 +80,18 @@ def get_session_factory() -> async_sessionmaker[AsyncSession]:
 
 
 async def init_db() -> None:
-    """Initialize the database (create tables if they don't exist)"""
+    """Initialize database connectivity and optionally create tables."""
     engine = get_engine()
 
-    async with engine.begin() as conn:
-        # Create all tables
-        await conn.run_sync(Base.metadata.create_all)
+    if settings.database.auto_create_tables:
+        async with engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+        logger.info("Database tables initialized")
+        return
 
-    logger.info("Database tables initialized")
+    async with engine.connect() as conn:
+        await conn.execute(text("SELECT 1"))
+    logger.info("Database connectivity verified; schema creation disabled")
 
 
 async def close_db() -> None:

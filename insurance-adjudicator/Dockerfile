@@ -16,7 +16,8 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # Copy and install dependencies
-COPY pyproject.toml ./
+COPY pyproject.toml README.md ./
+COPY src/ ./src/
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir .
 
@@ -36,6 +37,8 @@ ENV PATH="/opt/venv/bin:$PATH"
 # Copy application code
 COPY --chown=appuser:appgroup src/ ./src/
 COPY --chown=appuser:appgroup pyproject.toml ./
+COPY --chown=appuser:appgroup alembic.ini ./
+COPY --chown=appuser:appgroup alembic/ ./alembic/
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1 \
@@ -45,7 +48,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 # Health check
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import httpx; httpx.get('http://localhost:8000/health')" || exit 1
+    CMD python -c "import httpx; r=httpx.get('http://127.0.0.1:8000/health', timeout=5); raise SystemExit(0 if r.status_code < 500 else 1)" || exit 1
 
 # Switch to non-root user
 USER appuser

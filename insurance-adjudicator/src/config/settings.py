@@ -3,16 +3,52 @@ Insurance Adjudicator System Configuration
 Enterprise-grade settings with validation, feature flags, and environment support
 """
 
-import os
+import base64
 import logging
-from typing import Optional, List, Dict, Any, Set
+import os
+from typing import Optional, List, Dict, Any
 from dataclasses import dataclass, field
 from enum import Enum
+from urllib.parse import quote_plus
 
 from ..core.exceptions import ConfigurationError
 
 
 logger = logging.getLogger(__name__)
+
+
+def _env_bool(name: str, default: bool) -> bool:
+    """Parse a boolean environment variable."""
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "y", "on"}
+
+
+def _env_csv(name: str, default: str = "") -> List[str]:
+    """Parse a comma-separated environment variable."""
+    value = os.getenv(name, default)
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def _looks_like_placeholder(value: Optional[str]) -> bool:
+    """Detect development placeholders that should never reach production."""
+    if not value:
+        return True
+    normalized = value.strip().lower()
+    placeholders = {
+        "change-me",
+        "change-me-in-production",
+        "changeme",
+        "secret",
+        "dev-secret",
+        "dev-jwt-secret-change-in-production",
+        "postgres",
+        "password",
+        "admin",
+        "test",
+    }
+    return normalized in placeholders or normalized.startswith("dev-")
 
 
 class Environment(Enum):
@@ -171,14 +207,24 @@ class DatabaseConfig:
     pool_size: int = field(default_factory=lambda: int(os.getenv("DB_POOL_SIZE", "10")))
     max_overflow: int = field(default_factory=lambda: int(os.getenv("DB_MAX_OVERFLOW", "20")))
     ssl_mode: str = field(default_factory=lambda: os.getenv("DB_SSL_MODE", "prefer"))
+    auto_create_tables: bool = field(
+        default_factory=lambda: _env_bool(
+            "DB_AUTO_CREATE_TABLES",
+            os.getenv("ENVIRONMENT", "development").lower() != "production",
+        )
+    )
 
     @property
     def connection_string(self) -> str:
-        return f"postgresql://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        user = quote_plus(self.user)
+        password = quote_plus(self.password)
+        return f"postgresql://{user}:{password}@{self.host}:{self.port}/{self.name}"
 
     @property
     def async_connection_string(self) -> str:
-        return f"postgresql+asyncpg://{self.user}:{self.password}@{self.host}:{self.port}/{self.name}"
+        user = quote_plus(self.user)
+        password = quote_plus(self.password)
+        return f"postgresql+asyncpg://{user}:{password}@{self.host}:{self.port}/{self.name}"
 
 
 # ==================== Redis Config ====================
@@ -195,7 +241,7 @@ class RedisConfig:
     @property
     def connection_string(self) -> str:
         protocol = "rediss" if self.ssl else "redis"
-        auth = f":{self.password}@" if self.password else ""
+        auth = f":{quote_plus(self.password)}@" if self.password else ""
         return f"{protocol}://{auth}{self.host}:{self.port}/{self.db}"
 
 
@@ -204,7 +250,12 @@ class RedisConfig:
 @dataclass
 class LLMConfig:
     """LLM Provider configuration"""
-    provider: str = field(default_factory=lambda: os.getenv("LLM_PROVIDER", "anthropic"))
+    provider: str = field(
+        default_factory=lambda: os.getenv(
+            "LLM_PROVIDER",
+            "mock" if os.getenv("ENVIRONMENT", "development").lower() == "development" else "anthropic",
+        )
+    )
     api_key: str = field(default_factory=lambda: os.getenv("LLM_API_KEY", ""))
     model: str = field(default_factory=lambda: os.getenv("LLM_MODEL", "claude-sonnet-4-20250514"))
     max_tokens: int = field(default_factory=lambda: int(os.getenv("LLM_MAX_TOKENS", "4096")))
@@ -274,11 +325,8 @@ class SecurityConfig:
     allowed_hosts: List[str] = field(default_factory=list)
 
     def __post_init__(self):
-        cors_str = os.getenv("CORS_ORIGINS", "*")
-        self.cors_origins = [o.strip() for o in cors_str.split(",") if o.strip()]
-
-        hosts_str = os.getenv("ALLOWED_HOSTS", "*")
-        self.allowed_hosts = [h.strip() for h in hosts_str.split(",") if h.strip()]
+        self.cors_origins = _env_csv("CORS_ORIGINS", "*")
+        self.allowed_hosts = _env_csv("ALLOWED_HOSTS", "*")
 
 
 # ==================== Main Settings ====================
@@ -386,15 +434,44 @@ class Settings:
 
         if not self.database.password:
             errors.append("DB_PASSWORD must be set in production")
+        elif _looks_like_placeholder(self.database.password):
+            errors.append("DB_PASSWORD must not use a development placeholder in production")
 
-        if not self.llm.api_key:
+        if self.llm.provider == "mock":
+            errors.append("LLM_PROVIDER=mock is not allowed in production")
+
+        if self.llm.provider != "mock" and not self.llm.api_key:
             errors.append("LLM_API_KEY must be set in production")
 
         if not self.security.encryption_key:
             errors.append("ENCRYPTION_KEY must be set in production for PII protection")
 
+        if not self.security.jwt_secret:
+            errors.append("JWT_SECRET must be set in production")
+        elif _looks_like_placeholder(self.security.jwt_secret) or len(self.security.jwt_secret) < 32:
+            errors.append("JWT_SECRET must be at least 32 characters and not a placeholder")
+
+        weak_api_keys = [
+            key for key in self.api_keys
+            if _looks_like_placeholder(key) or len(key) < 24
+        ]
+        if weak_api_keys:
+            errors.append("API_KEYS must be high-entropy values of at least 24 characters")
+
+        if not self.security.allowed_hosts or "*" in self.security.allowed_hosts:
+            errors.append("ALLOWED_HOSTS must be explicit in production")
+
         if self.features.use_database and not self.database.password:
             errors.append("Database password required when FF_USE_DATABASE is enabled")
+
+        if self.database.auto_create_tables:
+            errors.append("DB_AUTO_CREATE_TABLES must be false in production; run Alembic migrations instead")
+
+        if self.database.ssl_mode in {"disable", "allow"}:
+            errors.append("DB_SSL_MODE must require or prefer TLS in production")
+
+        if self.features.enable_rate_limiting and not self.redis.host:
+            errors.append("REDIS_HOST must be set when rate limiting is enabled in production")
 
         return errors
 
@@ -404,6 +481,9 @@ class Settings:
 
         if self.llm.provider not in ["anthropic", "openai", "mock"]:
             errors.append(f"Invalid LLM_PROVIDER: {self.llm.provider}")
+
+        if self.llm.provider != "mock" and self.llm.api_key and _looks_like_placeholder(self.llm.api_key):
+            errors.append("LLM_API_KEY must not use a placeholder value")
 
         if self.llm.temperature < 0 or self.llm.temperature > 2:
             errors.append(f"LLM_TEMPERATURE must be between 0 and 2: {self.llm.temperature}")
@@ -472,6 +552,17 @@ class Settings:
 
         if self.is_production and "*" in self.security.cors_origins:
             errors.append("CORS_ORIGINS should not be '*' in production")
+
+        if self.security.jwt_algorithm and self.security.jwt_algorithm.lower() == "none":
+            errors.append("JWT_ALGORITHM=none is not allowed")
+
+        if self.security.encryption_key:
+            try:
+                decoded = base64.urlsafe_b64decode(self.security.encryption_key)
+                if len(decoded) != 32:
+                    errors.append("ENCRYPTION_KEY must decode to exactly 32 bytes")
+            except Exception:
+                errors.append("ENCRYPTION_KEY must be urlsafe base64 encoded")
 
         return errors
 

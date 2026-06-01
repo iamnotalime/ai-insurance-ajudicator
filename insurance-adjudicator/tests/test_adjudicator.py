@@ -61,12 +61,13 @@ def sample_policy_holder():
 
 @pytest.fixture
 def sample_policy(sample_policy_holder):
+    today = date.today()
     return Policy(
         policy_number="POL-TEST-001",
         policy_type=ClaimType.AUTO,
         holder=sample_policy_holder,
-        effective_date=date(2024, 1, 1),
-        expiration_date=date(2025, 12, 31),
+        effective_date=date(today.year - 1, 1, 1),
+        expiration_date=date(today.year + 1, 12, 31),
         premium=Decimal("1500.00"),
         coverages=[
             CoverageItem(

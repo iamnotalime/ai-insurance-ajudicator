@@ -9,15 +9,36 @@ from functools import wraps
 from typing import Optional, Dict, Any, Callable
 
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.semconv.resource import ResourceAttributes
 from opentelemetry.trace import Status, StatusCode, Span
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
-from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
+try:
+    from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import BatchSpanProcessor, ConsoleSpanExporter
+    from opentelemetry.sdk.resources import Resource
+    from opentelemetry.semconv.resource import ResourceAttributes
+except ModuleNotFoundError:
+    OTLPSpanExporter = None
+    TracerProvider = None
+    BatchSpanProcessor = None
+    ConsoleSpanExporter = None
+    Resource = None
+    ResourceAttributes = None
+
+try:
+    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+except ModuleNotFoundError:
+    FastAPIInstrumentor = None
+
+try:
+    from opentelemetry.instrumentation.sqlalchemy import SQLAlchemyInstrumentor
+except ModuleNotFoundError:
+    SQLAlchemyInstrumentor = None
+
+try:
+    from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+except ModuleNotFoundError:
+    HTTPXClientInstrumentor = None
 
 from ..config.settings import settings
 
@@ -39,6 +60,10 @@ def setup_tracing() -> None:
         logger.info("Tracing is disabled")
         return
 
+    if TracerProvider is None or Resource is None or ResourceAttributes is None:
+        logger.warning("OpenTelemetry SDK/exporter dependencies are not installed; tracing disabled")
+        return
+
     # Create resource with service information
     resource = Resource.create({
         ResourceAttributes.SERVICE_NAME: settings.app_name,
@@ -50,7 +75,7 @@ def setup_tracing() -> None:
     provider = TracerProvider(resource=resource)
 
     # Add exporters based on configuration
-    if settings.observability.jaeger_endpoint:
+    if settings.observability.jaeger_endpoint and OTLPSpanExporter is not None:
         # Export to Jaeger/OTLP collector
         otlp_exporter = OTLPSpanExporter(
             endpoint=settings.observability.jaeger_endpoint,
@@ -82,21 +107,21 @@ def get_tracer() -> trace.Tracer:
 
 def instrument_fastapi(app) -> None:
     """Instrument FastAPI application"""
-    if settings.observability.enable_tracing:
+    if settings.observability.enable_tracing and FastAPIInstrumentor is not None:
         FastAPIInstrumentor.instrument_app(app)
         logger.info("FastAPI instrumented for tracing")
 
 
 def instrument_sqlalchemy(engine) -> None:
     """Instrument SQLAlchemy engine"""
-    if settings.observability.enable_tracing:
+    if settings.observability.enable_tracing and SQLAlchemyInstrumentor is not None:
         SQLAlchemyInstrumentor().instrument(engine=engine)
         logger.info("SQLAlchemy instrumented for tracing")
 
 
 def instrument_httpx() -> None:
     """Instrument HTTPX client for outgoing HTTP requests"""
-    if settings.observability.enable_tracing:
+    if settings.observability.enable_tracing and HTTPXClientInstrumentor is not None:
         HTTPXClientInstrumentor().instrument()
         logger.info("HTTPX instrumented for tracing")
 

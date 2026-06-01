@@ -203,7 +203,7 @@ class AuditLogger:
                     new_value=entry.new_value,
                     success=entry.success,
                     error_message=entry.error_message,
-                    metadata=entry.metadata,
+                    metadata_json=entry.metadata,
                 )
                 session.add(db_entry)
         except Exception as e:
@@ -424,7 +424,7 @@ class AuditLogger:
             new_value=row.new_value,
             success=row.success,
             error_message=row.error_message,
-            metadata=row.metadata or {},
+            metadata=row.metadata_json or {},
         )
 
     async def get_entries_for_resource(

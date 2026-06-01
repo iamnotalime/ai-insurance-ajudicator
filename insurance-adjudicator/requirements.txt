@@ -43,6 +43,7 @@ aioredis>=2.0.1
 
 # Security headers and middleware
 python-multipart>=0.0.6
+PyJWT>=2.8.0
 
 # ==================== Caching ====================
 aiocache>=0.12.2

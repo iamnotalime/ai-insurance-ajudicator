@@ -348,3 +348,28 @@ def get_input_preparer() -> LLMInputPreparer:
     if _input_preparer is None:
         _input_preparer = LLMInputPreparer()
     return _input_preparer
+
+
+def sanitize_input(text: str, *, redact_pii: bool = True, max_length: int = 50000) -> str:
+    """
+    Compatibility helper that returns sanitized text directly.
+
+    Raises:
+        ValueError: If prompt-injection or blocked content is detected.
+    """
+    sanitizer = PromptSanitizer(redact_pii=redact_pii, max_length=max_length)
+    result = sanitizer.sanitize(text)
+    if result.blocked:
+        raise ValueError(result.block_reason or "Input blocked")
+    allowed, category = get_content_filter().check(result.sanitized_text)
+    if not allowed:
+        raise ValueError(f"Input blocked by content filter: {category}")
+    return result.sanitized_text
+
+
+def detect_prompt_injection(text: str) -> bool:
+    """Return True when text matches a prompt-injection pattern."""
+    if not text:
+        return False
+    sanitizer = get_sanitizer()
+    return any(pattern.search(text) for pattern in sanitizer._injection_patterns)

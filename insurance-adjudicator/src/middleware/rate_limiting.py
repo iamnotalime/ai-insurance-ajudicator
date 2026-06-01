@@ -4,6 +4,7 @@ Implements sliding window rate limiting with Redis backend
 """
 
 import asyncio
+import hashlib
 import logging
 import time
 from dataclasses import dataclass
@@ -35,7 +36,7 @@ class RateLimitConfig:
         if self.endpoint_limits is None:
             self.endpoint_limits = {
                 "/api/v1/claims/batch": 10,  # Batch processing is expensive
-                "/api/v1/claims/adjudicate": 30,  # Adjudication is resource-intensive
+                "*/adjudicate": 30,  # Adjudication is resource-intensive
             }
 
 
@@ -89,7 +90,10 @@ class InMemoryRateLimiter:
             minute_limit = self.config.requests_per_minute
             if endpoint:
                 for prefix, limit in self.config.endpoint_limits.items():
-                    if endpoint.startswith(prefix):
+                    if (
+                        endpoint.startswith(prefix)
+                        or (prefix.startswith("*") and endpoint.endswith(prefix[1:]))
+                    ):
                         minute_limit = limit
                         break
 
@@ -194,7 +198,10 @@ class RedisRateLimiter:
             minute_limit = self.config.requests_per_minute
             if endpoint:
                 for prefix, limit in self.config.endpoint_limits.items():
-                    if endpoint.startswith(prefix):
+                    if (
+                        endpoint.startswith(prefix)
+                        or (prefix.startswith("*") and endpoint.endswith(prefix[1:]))
+                    ):
                         minute_limit = limit
                         break
 
@@ -238,6 +245,11 @@ class RedisRateLimiter:
                 pass
         await self._fallback.reset(identifier)
 
+    @property
+    def is_distributed(self) -> bool:
+        """True when Redis-backed distributed limiting is active."""
+        return self._redis_available
+
 
 # Global rate limiter instances
 RateLimiter = InMemoryRateLimiter(RateLimitConfig())
@@ -253,6 +265,7 @@ async def get_rate_limiter() -> RedisRateLimiter:
             requests_per_hour=settings.rate_limit.requests_per_hour,
             requests_per_day=settings.rate_limit.requests_per_day,
             burst_limit=settings.rate_limit.burst_limit,
+            endpoint_limits=settings.rate_limit.endpoint_overrides or None,
         )
         _redis_rate_limiter = RedisRateLimiter(
             config=config,
@@ -275,8 +288,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         skip_paths: Optional[list] = None,
     ):
         super().__init__(app)
-        self.rate_limiter = rate_limiter or RateLimiter
-        self.skip_paths = skip_paths or ["/health", "/ready", "/metrics"]
+        self.rate_limiter = rate_limiter
+        self.skip_paths = skip_paths or ["/health", "/ready", "/metrics", "/docs", "/openapi.json"]
 
     async def dispatch(
         self,
@@ -284,16 +297,22 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         call_next: Callable[[Request], Awaitable[Response]]
     ) -> Response:
         """Process request with rate limiting"""
+        if not settings.features.enable_rate_limiting:
+            return await call_next(request)
 
         # Skip rate limiting for health checks and metrics
         if any(request.url.path.startswith(p) for p in self.skip_paths):
             return await call_next(request)
 
+        limiter = self.rate_limiter
+        if limiter is None:
+            limiter = await get_rate_limiter()
+
         # Get identifier (API key or IP)
         identifier = self._get_identifier(request)
 
         # Check rate limit
-        is_allowed, headers = await self.rate_limiter.is_allowed(
+        is_allowed, headers = await limiter.is_allowed(
             identifier,
             endpoint=request.url.path
         )
@@ -324,11 +343,15 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
 
     def _get_identifier(self, request: Request) -> str:
         """Extract rate limit identifier from request"""
-        # Try API key first
+        configured_api_key = request.headers.get(settings.security.api_key_header)
+        if configured_api_key:
+            return f"api_key:{self._fingerprint(configured_api_key)}"
+
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
-            api_key = auth_header[7:]
-            return f"api_key:{api_key[:16]}..."  # Truncate for privacy
+            return f"bearer:{self._fingerprint(auth_header[7:])}"
+        if auth_header.startswith("ApiKey "):
+            return f"api_key:{self._fingerprint(auth_header[7:])}"
 
         # Fall back to IP address
         forwarded_for = request.headers.get("X-Forwarded-For")
@@ -339,3 +362,8 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             ip = request.client.host if request.client else "unknown"
 
         return f"ip:{ip}"
+
+    @staticmethod
+    def _fingerprint(value: str) -> str:
+        """Create a stable non-secret identifier for rate-limit keys."""
+        return hashlib.sha256(value.encode("utf-8")).hexdigest()[:16]
